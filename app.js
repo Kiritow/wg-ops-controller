@@ -41,7 +41,7 @@ async function GetWireGuardConfigs(nodeId) {
     const usedNames = new Set()
     const usedPorts = new Set()
 
-    const results =  await Promise.all(interfaces.map(async (info) => {
+    return await Promise.all(interfaces.map(async (info) => {
         let name = info.f_name
         if (!name) {
             throw new ServerError(`interface ${info.f_id} has not configured name`)
@@ -83,13 +83,17 @@ PostDown=iptables -t nat -D POSTROUTING -o __ETH_NAME__ -j MASQUERADE
         const connections = await dao.getWGConnections(info.f_id)
         if (!connections) {
             return {
-                key: name,
-                value: interfacePart,
+                name,
+                config: interfacePart,
+                report: {
+                    id: info.f_id,
+                }
             }
         }
 
         const usedPeerPubkey = new Set()
 
+        const reportPeers = []
         const peerParts = connections.map((peerInfo) => {
             let endpointPart = ''
             if (peerInfo.f_endpoint_id) {
@@ -113,6 +117,16 @@ PostDown=iptables -t nat -D POSTROUTING -o __ETH_NAME__ -j MASQUERADE
             }
             usedPeerPubkey.add(peerInfo.f_wg_pubkey)
 
+            const reportInfo = {
+                id: peerInfo.f_id,
+            }
+            if (peerInfo.f_ping_ip) {
+                reportInfo.ip = peerInfo.f_ping_ip
+                reportInfo.interval = peerInfo.f_ping_interval || 60
+            }
+
+            reportPeers.push(reportInfo)
+
             return `[Peer]
 PublicKey = ${peerInfo.f_wg_pubkey}
 AllowedIPs = ${peerInfo.f_allowed_ips}
@@ -120,16 +134,14 @@ ${endpointPart}`
         })
 
         return {
-            key: name,
-            value: `${interfacePart}\n${peerParts.join('\n')}`,
+            name,
+            config: `${interfacePart}\n${peerParts.join('\n')}`,
+            report: {
+                id: info.f_id,
+                peers: reportPeers,
+            }
         }
     }))
-
-    const obj = {}
-    results.forEach((pack) => {
-        obj[pack.key] = pack.value
-    })
-    return obj
 }
 
 async function EnsureSignature(ctx) {
