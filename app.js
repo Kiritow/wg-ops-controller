@@ -76,7 +76,7 @@ async function EnsureSignature(ctx) {
     return info
 }
 
-router.get('/config', async (ctx) => {
+router.get('/wgconfig', async (ctx) => {
     const info = await EnsureSignature(ctx)
     if (!info) return
 
@@ -100,6 +100,56 @@ router.get('/config', async (ctx) => {
             code: -1,
             message: 'Internal Server Error',
         }
+    }
+})
+
+router.get('/config', async (ctx) => {
+    const info = await EnsureSignature(ctx)
+    if (!info) return
+
+    const interfaces = (await dao.getInterfaces(info.f_id)).map((row) => ({
+        id: row.f_id,
+        name: row.f_name,
+        key: row.f_wg_pubkey,
+        lan: row.f_lan_ip,
+        mtu: row.f_mtu,
+        port: row.f_port,
+    }))
+
+    const settings = await Promise.all(interfaces.map(async (data) => {
+        const result = await dao.getWGConnections(data.id)
+        if (!result) {
+            return data
+        }
+
+        data.peers = result.map((row) => {
+            const ret = {
+                id: row.f_id,
+                endip: row.f_endpoint_ip || row.f_endpoint_node_ip,
+                endport: row.f_endpoint_port || row.f_interface_port,
+                key: row.f_wg_pubkey,
+                allow: row.f_allowed_ips,
+            }
+    
+            if (row.f_keepalive) {
+                ret.keepalive = row.f_keepalive
+            }
+    
+            if (row.f_ping_ip) {
+                ret.ping = row.f_ping_ip
+                ret.pingInterval = row.f_ping_interval
+            }
+    
+            return ret
+        })
+        
+        return data
+    }))
+
+    ctx.body = {
+        code: 0,
+        message: 'success',
+        data: settings,
     }
 })
 
