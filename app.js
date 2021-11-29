@@ -5,7 +5,6 @@ const koaJson = require('koa-json')
 const moment = require('moment')
 const crypto = require('crypto')
 const DaoClass = require('./dao')
-const { GetWireGuardConfigs } = require('./util')
 
 const app = new koa()
 app.use(koaBodyParser())
@@ -76,38 +75,11 @@ async function EnsureSignature(ctx) {
     return info
 }
 
-router.get('/wgconfig', async (ctx) => {
-    const info = await EnsureSignature(ctx)
-    if (!info) return
-
-    try {
-        const wgConfigList = await GetWireGuardConfigs(dao, info.f_id)
-        ctx.body = {
-            code: 0,
-            message: 'success',
-            data: wgConfigList,
-        }
-    } catch (e) {
-        if (e.eType) {
-            ctx.body = {
-                code: -1,
-                message: e.message,
-            }
-            return
-        }
-        console.log(e)
-        ctx.body = {
-            code: -1,
-            message: 'Internal Server Error',
-        }
-    }
-})
-
 router.get('/config', async (ctx) => {
     const info = await EnsureSignature(ctx)
     if (!info) return
 
-    const interfaces = (await dao.getInterfaces(info.f_id)).map((row) => ({
+    const interfaces = (await dao.getInterfacesFromNode(info.f_id)).map((row) => ({
         id: row.f_id,
         name: row.f_name,
         key: row.f_wg_pubkey,
@@ -117,32 +89,68 @@ router.get('/config', async (ctx) => {
     }))
 
     const settings = await Promise.all(interfaces.map(async (data) => {
-        const result = await dao.getWGConnections(data.id)
-        if (!result) {
+        const peers = await dao.getPeersFromInterface(data.id)
+        if (!peers) {
             return data
         }
 
-        data.peers = result.map((row) => {
+        const endpoints = await dao.getEndpointsFromNode(info.f_id)
+
+        if (endpoints) {
+            data.servers = endpoints.map((row) => ({
+                id: row.f_id,
+                type: row.f_type,
+                port: row.f_port,
+                config: row.f_config,
+            }))
+        }
+
+        data.peers = await Promise.all(peers.map(async (row) => {
             const ret = {
                 id: row.f_id,
-                endip: row.f_endpoint_ip || row.f_endpoint_node_ip,
-                endport: row.f_endpoint_port || row.f_interface_port,
                 key: row.f_wg_pubkey,
                 allow: row.f_allowed_ips,
             }
-    
+
             if (row.f_keepalive) {
                 ret.keepalive = row.f_keepalive
             }
-    
+
             if (row.f_ping_ip) {
-                ret.ping = row.f_ping_ip
-                ret.pingInterval = row.f_ping_interval
+                ret.ping = {
+                    ip: row.f_ping_ip,
+                    interval: row.f_ping_interval,
+                }
             }
-    
+
+            if (row.f_endpoint_id > 0) {
+                const endpointInfo = await dao.getEndpointFromId(row.f_endpoint_id)
+                if (endpointInfo) {
+                    ret.endpoint = {
+                        id: endpointInfo.f_id,
+                        type: endpointInfo.f_type,
+                        ip: endpointInfo.f_node_ip,
+                        port: endpointInfo.f_port,
+                        config: endpointInfo.f_config,
+                    }
+                }
+            } else if (row.f_endpoint_id == 0 ) {
+                const nodeInfo = await dao.getNodeById(row.f_peer_node)
+                if (nodeInfo) {
+                    ret.endpoint = {
+                        id: 0,
+                        type: 0,
+                        ip: nodeInfo.f_ip,
+                        port: row.f_peer_port,
+                    }
+                }
+            } else {
+                ret.endpoint = null
+            }
+
             return ret
-        })
-        
+        }))
+
         return data
     }))
 
@@ -157,7 +165,7 @@ router.get('/keys', async (ctx) => {
     const info = await EnsureSignature(ctx)
     if (!info) return
 
-    const interfaces = (await dao.getInterfaces(info.f_id)) || []
+    const interfaces = (await dao.getInterfacesFromNode(info.f_id)) || []
     const results = interfaces.map((row) => ({
         id: row.f_id,
         name: row.f_name,
